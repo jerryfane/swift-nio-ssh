@@ -649,8 +649,11 @@ private extension SSHChildChannel {
     private func deliverSingleRead(_ data: PendingContent) {
         switch data {
         case .data(let data):
-            // We only futz with the window manager if the channel is not already closed.
-            if !self.didClose, let increment = self.windowManager.unbufferBytes(data.data.readableBytes) {
+            // We only futz with the window manager if the channel is not already closed. That includes
+            // a channel still delivering buffered reads after either side sent CHANNEL_CLOSE (for
+            // example closed locally with reads pending in the multiplexer): the peer's view of our
+            // receive window no longer matters, and the state machine rejects the adjust.
+            if !self.didClose, self.state.mayAdjustWindow, let increment = self.windowManager.unbufferBytes(data.data.readableBytes) {
                 let update = SSHMessage.ChannelWindowAdjustMessage(recipientChannel: self.state.remoteChannelIdentifier!, bytesToAdd: UInt32(increment))
                 self.processOutboundMessage(.channelWindowAdjust(update), promise: nil)
             }

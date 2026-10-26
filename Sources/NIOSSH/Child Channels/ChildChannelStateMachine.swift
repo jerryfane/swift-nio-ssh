@@ -428,7 +428,13 @@ extension ChildChannelStateMachine {
             // In the idle state we haven't either sent a channel open or received one. This is not really possible.
             preconditionFailure("Somehow received channel EOF for idle channel")
 
-        case .requestedLocally, .requestedRemotely, .closedLocally, .closedRemotely, .closed:
+        case .closedLocally, .closedRemotely, .closed:
+            // SSHChildChannel no longer generates a window adjust once either side has sent
+            // CHANNEL_CLOSE (see `mayAdjustWindow`). Should another path ever get here, a
+            // contained channel error beats killing the whole process.
+            throw NIOSSHError.protocolViolation(protocolName: "channel", violation: "Sent channel window adjust on closed channel.")
+
+        case .requestedLocally, .requestedRemotely:
             preconditionFailure("Sent channel window adjust on channel in invalid state")
         }
     }
@@ -595,6 +601,18 @@ extension ChildChannelStateMachine {
         case .active, .halfClosedLocal, .halfClosedRemote, .quiescent, .closedLocally, .closedRemotely:
             return true
         case .idle, .requestedLocally, .requestedRemotely, .closed:
+            return false
+        }
+    }
+
+    /// Whether a `CHANNEL_WINDOW_ADJUST` may be sent: true until either side has sent `CHANNEL_CLOSE`.
+    /// After our close the peer's window is pointless to grow, after theirs no more data is coming,
+    /// and once both are exchanged the channel number may be re-used.
+    var mayAdjustWindow: Bool {
+        switch self.state {
+        case .active, .halfClosedLocal, .halfClosedRemote, .quiescent:
+            return true
+        case .idle, .requestedLocally, .requestedRemotely, .closedLocally, .closedRemotely, .closed:
             return false
         }
     }
