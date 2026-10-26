@@ -1276,6 +1276,70 @@ final class ChildChannelMultiplexerTests: XCTestCase {
         self.assertChannelClose(harness.flushedMessages.last, recipientChannel: 1)
     }
 
+    func testWeDontResizeTheWindowForReadsDeliveredAfterLocalClose() throws {
+        // A read buffered in the multiplexer used to be delivered after the channel was closed locally,
+        // and servicing it sent a window adjust that hit a preconditionFailure in the state machine.
+        let harness = self.harnessForbiddingInboundChannels()
+        defer {
+            harness.finish()
+        }
+
+        let readRecorder = ReadRecordingHandler()
+        let errorLogger = ErrorLoggingHandler()
+        var childChannel: Channel?
+        harness.multiplexer.createChildChannel(channelType: .session) { channel, _ in
+            childChannel = channel
+            return channel.setOption(ChannelOptions.autoRead, value: false).flatMap {
+                channel.pipeline.addHandlers([readRecorder, errorLogger])
+            }
+        }
+
+        guard let channel = childChannel else {
+            XCTFail("Did not create child channel")
+            return
+        }
+
+        // Activate channel.
+        let channelID = self.assertChannelOpen(harness.flushedMessages.first)
+        XCTAssertNoThrow(try harness.multiplexer.receiveMessage(self.openConfirmation(originalChannelID: channelID!, peerChannelID: 1)))
+
+        // Read with nothing buffered: the read stays unsatisfied until the parent read completes.
+        channel.read()
+        XCTAssertEqual(harness.flushedMessages.count, 1)
+
+        // Data big enough that consuming it grows the window arrives in that parent read.
+        let buffer = ByteBuffer.bigBuffer
+        XCTAssertNoThrow(try harness.multiplexer.receiveMessage(self.data(peerChannelID: channelID!,
+                                                                          data: buffer.getSlice(at: buffer.readerIndex, length: SSHPacketParser.defaultMaximumPacketSize)!)))
+        XCTAssertEqual(harness.flushedMessages.count, 1)
+        XCTAssertEqual(readRecorder.reads.count, 0)
+
+        // The channel is closed locally before the parent read completes.
+        var closeResult: Result<Void, Error>?
+        channel.close().whenComplete { closeResult = $0 }
+        XCTAssertEqual(harness.flushedMessages.count, 2)
+        self.assertChannelClose(harness.flushedMessages.last, recipientChannel: 1)
+        XCTAssertNil(closeResult)
+
+        // The parent read completes: the buffered data is still delivered, without a window adjust and
+        // without erroring the channel.
+        harness.multiplexer.parentChannelReadComplete()
+        XCTAssertEqual(readRecorder.reads.count, 1)
+        XCTAssertEqual(harness.flushedMessages.count, 2)
+        XCTAssertEqual(errorLogger.errors.count, 0)
+        XCTAssertNil(closeResult)
+
+        // The peer's close completes a clean close.
+        XCTAssertNoThrow(try harness.multiplexer.receiveMessage(self.close(peerChannelID: channelID!)))
+        harness.eventLoop.run()
+        XCTAssertEqual(harness.flushedMessages.count, 2)
+        XCTAssertEqual(errorLogger.errors.count, 0)
+        guard case .success = closeResult else {
+            XCTFail("Expected a clean close, got \(String(describing: closeResult))")
+            return
+        }
+    }
+
     func testRespectingMaxMessageSize() throws {
         let harness = self.harnessForbiddingInboundChannels()
         defer {
