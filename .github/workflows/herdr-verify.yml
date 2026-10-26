@@ -12,20 +12,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build tests
-        run: swift build --build-tests
+        run: swift build --build-tests --enable-test-discovery
       - name: Regression test
         shell: bash
         run: |
           set -o pipefail
           test=NIOSSHTests.ChildChannelMultiplexerTests/testWeDontResizeTheWindowForReadsDeliveredAfterLocalClose
           if [ "$GITHUB_REF_NAME" = herdr/verify-unfixed ]; then
-            if swift test --skip-build --filter "$test" 2>&1 | tee test.log; then
+            if swift test --skip-build --enable-test-discovery --filter "$test" 2>&1 | tee test.log; then
               echo "::error::expected the unfixed tree to crash"; exit 1
             fi
             grep -F "Sent channel window adjust on channel in invalid state" test.log
           else
-            swift test --skip-build --filter "$test"
+            swift test --skip-build --enable-test-discovery --filter "$test"
           fi
       - name: Full suite
         if: github.ref_name == 'herdr/verify-fixed'
-        run: swift test --skip-build
+        run: swift test --skip-build --enable-test-discovery
